@@ -81,6 +81,10 @@ public final class QualityGateBreaker implements PostJob {
 
 	@Override
 	public void execute(PostJobContext context) {
+		if (config.getBoolean(BuildBreakerPlugin.SKIP_KEY).orElse(false)) {
+			LOGGER.debug("{} is disabled ({} = true)", CLASSNAME, BuildBreakerPlugin.SKIP_KEY);
+			return;
+		}
 		Properties reportTaskProps = loadReportTaskProps();
 		HttpConnector httpConnector = HttpConnector.newBuilder()//
 				.url(getServerUrl(reportTaskProps))//
