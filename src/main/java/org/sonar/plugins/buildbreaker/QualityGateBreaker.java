@@ -19,8 +19,8 @@
  */
 package org.sonar.plugins.buildbreaker;
 
-import org.sonar.api.internal.google.common.annotations.VisibleForTesting;
-import org.sonar.api.internal.google.common.io.Files;
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.io.Files;
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
