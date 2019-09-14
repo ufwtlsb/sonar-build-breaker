@@ -85,8 +85,8 @@ public final class QualityGateBreaker implements PostJob {
 		HttpConnector httpConnector = HttpConnector.newBuilder()//
 				.url(getServerUrl(reportTaskProps))//
 				.credentials(//
-						config.get(CoreProperties.LOGIN).get(), //
-						config.get(CoreProperties.PASSWORD).get()//
+						config.get(CoreProperties.LOGIN).orElse(""), //
+						config.get(CoreProperties.PASSWORD).orElse("")//
 				)//
 				.build();
 
@@ -128,8 +128,8 @@ public final class QualityGateBreaker implements PostJob {
 		WsRequest ceTaskRequest = new GetRequest("api/ce/task").setParam("id", ceTaskId)
 				.setMediaType(MediaTypes.PROTOBUF);
 
-		int queryMaxAttempts = config.getInt(BuildBreakerPlugin.QUERY_MAX_ATTEMPTS_KEY).get();
-		int queryInterval = config.getInt(BuildBreakerPlugin.QUERY_INTERVAL_KEY).get();
+		int queryMaxAttempts = config.getInt(BuildBreakerPlugin.QUERY_MAX_ATTEMPTS_KEY).orElse(0);
+		int queryInterval = config.getInt(BuildBreakerPlugin.QUERY_INTERVAL_KEY).orElse(1);
 
 		for (int attempts = 0; attempts < queryMaxAttempts; attempts++) {
 			WsResponse wsResponse = wsClient.wsConnector().call(ceTaskRequest);
