@@ -19,9 +19,8 @@
  */
 package org.sonar.plugins.buildbreaker;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Strings;
-import com.google.common.io.Files;
+import org.sonar.api.internal.google.common.annotations.VisibleForTesting;
+import org.sonar.api.internal.google.common.io.Files;
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -29,238 +28,202 @@ import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.Properties;
 import org.sonar.api.CoreProperties;
-import org.sonar.api.batch.AnalysisMode;
-import org.sonar.api.batch.CheckProject;
-import org.sonar.api.batch.PostJob;
-import org.sonar.api.batch.SensorContext;
+import org.sonar.api.batch.postjob.PostJob;
+import org.sonar.api.batch.postjob.PostJobContext;
+import org.sonar.api.batch.postjob.PostJobDescriptor;
 import org.sonar.api.batch.fs.FileSystem;
-import org.sonar.api.config.Settings;
+import org.sonar.api.config.Configuration;
 import org.sonar.api.measures.CoreMetrics;
 import org.sonar.api.measures.Metric;
-import org.sonar.api.resources.Project;
 import org.sonar.api.utils.log.Logger;
 import org.sonar.api.utils.log.Loggers;
+import org.sonarqube.ws.Ce.TaskResponse;
+import org.sonarqube.ws.Ce.TaskStatus;
 import org.sonarqube.ws.MediaTypes;
-import org.sonarqube.ws.WsCe.TaskResponse;
-import org.sonarqube.ws.WsCe.TaskStatus;
-import org.sonarqube.ws.WsQualityGates.ProjectStatusWsResponse;
-import org.sonarqube.ws.WsQualityGates.ProjectStatusWsResponse.Comparator;
-import org.sonarqube.ws.WsQualityGates.ProjectStatusWsResponse.Condition;
-import org.sonarqube.ws.WsQualityGates.ProjectStatusWsResponse.ProjectStatus;
-import org.sonarqube.ws.WsQualityGates.ProjectStatusWsResponse.Status;
+import org.sonarqube.ws.Qualitygates.ProjectStatusResponse;
+import org.sonarqube.ws.Qualitygates.ProjectStatusResponse.ProjectStatus;
 import org.sonarqube.ws.client.GetRequest;
 import org.sonarqube.ws.client.HttpConnector;
-import org.sonarqube.ws.client.HttpWsClient;
 import org.sonarqube.ws.client.WsClient;
+import org.sonarqube.ws.client.WsClientFactories;
 import org.sonarqube.ws.client.WsRequest;
 import org.sonarqube.ws.client.WsResponse;
-import org.sonarqube.ws.client.qualitygate.ProjectStatusWsRequest;
+import org.sonarqube.ws.client.qualitygates.ProjectStatusRequest;
 
 /**
- * Retrieves the ID of the server-side Compute Engine task, waits for task completion, then checks
- * the project's quality gate. Breaks the build if the quality gate has failed.
+ * Retrieves the ID of the server-side Compute Engine task, waits for task
+ * completion, then checks the project's quality gate. Breaks the build if the
+ * quality gate has failed.
  */
-public final class QualityGateBreaker implements CheckProject, PostJob {
-  private static final String CLASSNAME = QualityGateBreaker.class.getSimpleName();
-  private static final Logger LOGGER = Loggers.get(QualityGateBreaker.class);
+public final class QualityGateBreaker implements PostJob {
+	private static final String CLASSNAME = QualityGateBreaker.class.getSimpleName();
+	private static final Logger LOGGER = Loggers.get(QualityGateBreaker.class);
 
-  private final AnalysisMode analysisMode;
-  private final FileSystem fileSystem;
-  private final Settings settings;
+	private final FileSystem fileSystem;
+	private final Configuration config;
 
-  /**
-   * Constructor used to inject dependencies.
-   *
-   * @param analysisMode the analysis mode
-   * @param fileSystem the analysis' file system
-   * @param settings the project settings
-   */
-  public QualityGateBreaker(AnalysisMode analysisMode, FileSystem fileSystem, Settings settings) {
-    this.analysisMode = analysisMode;
-    this.fileSystem = fileSystem;
-    this.settings = settings;
-  }
+	/**
+	 * Constructor used to inject dependencies.
+	 *
+	 * @param fileSystem
+	 *            the analysis' file system
+	 */
+	public QualityGateBreaker(FileSystem fileSystem, Configuration config) {
+		this.fileSystem = fileSystem;
+		this.config = config;
+	}
 
-  @Override
-  public boolean shouldExecuteOnProject(Project project) {
-    if (!analysisMode.isPublish()) {
-      LOGGER.debug(
-          "{} is disabled ({} != {})",
-          CLASSNAME,
-          CoreProperties.ANALYSIS_MODE,
-          CoreProperties.ANALYSIS_MODE_PUBLISH);
-      return false;
-    }
-    if (settings.getBoolean(BuildBreakerPlugin.SKIP_KEY)) {
-      LOGGER.debug("{} is disabled ({} = true)", CLASSNAME, BuildBreakerPlugin.SKIP_KEY);
-      return false;
-    }
-    return true;
-  }
+	@Override
+	public void describe(PostJobDescriptor descriptor) {
+		// null
 
-  @Override
-  public void executeOn(Project project, SensorContext context) {
-    Properties reportTaskProps = loadReportTaskProps();
+	}
 
-    HttpConnector httpConnector =
-        new HttpConnector.Builder()
-            .url(getServerUrl(reportTaskProps))
-            .credentials(
-                settings.getString(CoreProperties.LOGIN),
-                settings.getString(CoreProperties.PASSWORD))
-            .build();
+	@Override
+	public void execute(PostJobContext context) {
+		Properties reportTaskProps = loadReportTaskProps();
+		HttpConnector httpConnector = HttpConnector.newBuilder()//
+				.url(getServerUrl(reportTaskProps))//
+				.credentials(//
+						config.get(CoreProperties.LOGIN).get(), //
+						config.get(CoreProperties.PASSWORD).get()//
+				)//
+				.build();
 
-    WsClient wsClient = new HttpWsClient(httpConnector);
+		WsClient wsClient = WsClientFactories.getDefault().newClient(httpConnector);
 
-    String analysisId = getAnalysisId(wsClient, reportTaskProps.getProperty("ceTaskId"));
+		String analysisId = getAnalysisId(wsClient, reportTaskProps.getProperty("ceTaskId"));
 
-    checkQualityGate(wsClient, analysisId);
-  }
+		checkQualityGate(wsClient, analysisId);
 
-  private String getServerUrl(Properties reportTaskProps) {
-    String altServerUrl = settings.getString(BuildBreakerPlugin.ALTERNATIVE_SERVER_URL_KEY);
-    if (Strings.isNullOrEmpty(altServerUrl)) {
-      return reportTaskProps.getProperty("serverUrl");
-    } else {
-      LOGGER.debug(
-          "Using alternative server URL ({}): {}",
-          BuildBreakerPlugin.ALTERNATIVE_SERVER_URL_KEY,
-          altServerUrl);
-      return altServerUrl;
-    }
-  }
+	}
 
-  private Properties loadReportTaskProps() {
-    File reportTaskFile = new File(fileSystem.workDir(), "report-task.txt");
+	private String getServerUrl(Properties reportTaskProps) {
+		if (!config.hasKey(BuildBreakerPlugin.ALTERNATIVE_SERVER_URL_KEY)) {
+			return reportTaskProps.getProperty("serverUrl");
+		}
+		String altServerUrl = config.get(BuildBreakerPlugin.ALTERNATIVE_SERVER_URL_KEY).get();
+		LOGGER.debug("Using alternative server URL ({}): {}", BuildBreakerPlugin.ALTERNATIVE_SERVER_URL_KEY,
+				altServerUrl);
+		return altServerUrl;
 
-    Properties reportTaskProps = new Properties();
+	}
 
-    try {
-      reportTaskProps.load(Files.newReader(reportTaskFile, StandardCharsets.UTF_8));
-    } catch (IOException e) {
-      throw new IllegalStateException("Unable to load properties from file " + reportTaskFile, e);
-    }
+	private Properties loadReportTaskProps() {
+		File reportTaskFile = new File(fileSystem.workDir(), "report-task.txt");
 
-    return reportTaskProps;
-  }
+		Properties reportTaskProps = new Properties();
 
-  @VisibleForTesting
-  String getAnalysisId(WsClient wsClient, String ceTaskId) {
-    WsRequest ceTaskRequest =
-        new GetRequest("api/ce/task").setParam("id", ceTaskId).setMediaType(MediaTypes.PROTOBUF);
+		try {
+			reportTaskProps.load(Files.newReader(reportTaskFile, StandardCharsets.UTF_8));
+		} catch (IOException e) {
+			throw new IllegalStateException("Unable to load properties from file " + reportTaskFile, e);
+		}
 
-    int queryMaxAttempts = settings.getInt(BuildBreakerPlugin.QUERY_MAX_ATTEMPTS_KEY);
-    int queryInterval = settings.getInt(BuildBreakerPlugin.QUERY_INTERVAL_KEY);
+		return reportTaskProps;
+	}
 
-    for (int attempts = 0; attempts < queryMaxAttempts; attempts++) {
-      WsResponse wsResponse = wsClient.wsConnector().call(ceTaskRequest);
+	@VisibleForTesting
+	String getAnalysisId(WsClient wsClient, String ceTaskId) {
+		WsRequest ceTaskRequest = new GetRequest("api/ce/task").setParam("id", ceTaskId)
+				.setMediaType(MediaTypes.PROTOBUF);
 
-      try {
-        TaskResponse taskResponse = TaskResponse.parseFrom(wsResponse.contentStream());
-        TaskStatus taskStatus = taskResponse.getTask().getStatus();
+		int queryMaxAttempts = config.getInt(BuildBreakerPlugin.QUERY_MAX_ATTEMPTS_KEY).get();
+		int queryInterval = config.getInt(BuildBreakerPlugin.QUERY_INTERVAL_KEY).get();
 
-        switch (taskStatus) {
-          case IN_PROGRESS:
-          case PENDING:
-            // Wait the configured interval then retry
-            LOGGER.info("Waiting for report processing to complete...");
-            Thread.sleep(queryInterval);
-            break;
-          case SUCCESS:
-            // Exit
-            return taskResponse.getTask().getAnalysisId();
-          default:
-            throw new IllegalStateException(
-                "Report processing did not complete successfully: " + taskStatus);
-        }
-      } catch (IOException | InterruptedException e) {
-        throw new IllegalStateException(e.getMessage(), e);
-      }
-    }
+		for (int attempts = 0; attempts < queryMaxAttempts; attempts++) {
+			WsResponse wsResponse = wsClient.wsConnector().call(ceTaskRequest);
 
-    LOGGER.error(
-        "{} API query limit ({}) reached.  Try increasing {}, {}, or both.",
-        BuildBreakerPlugin.LOG_STAMP,
-        queryMaxAttempts,
-        BuildBreakerPlugin.QUERY_MAX_ATTEMPTS_KEY,
-        BuildBreakerPlugin.QUERY_INTERVAL_KEY);
+			try {
+				TaskResponse taskResponse = TaskResponse.parseFrom(wsResponse.contentStream());
+				TaskStatus taskStatus = taskResponse.getTask().getStatus();
 
-    throw new IllegalStateException(
-        "Report processing is taking longer than the configured wait limit.");
-  }
+				switch (taskStatus) {
+				case IN_PROGRESS:
+				case PENDING:
+					// Wait the configured interval then retry
+					LOGGER.info("Waiting for report processing to complete...");
+					Thread.sleep(queryInterval);
+					break;
+				case SUCCESS:
+					// Exit
+					return taskResponse.getTask().getAnalysisId();
+				default:
+					throw new IllegalStateException("Report processing did not complete successfully: " + taskStatus);
+				}
+			} catch (IOException | InterruptedException e) {
+				throw new IllegalStateException(e.getMessage(), e);
+			}
+		}
 
-  @VisibleForTesting
-  void checkQualityGate(WsClient wsClient, String analysisId) {
-    LOGGER.debug("Requesting quality gate status for analysisId {}", analysisId);
-    ProjectStatusWsResponse projectStatusResponse =
-        wsClient
-            .qualityGates()
-            .projectStatus(new ProjectStatusWsRequest().setAnalysisId(analysisId));
+		LOGGER.error("{} API query limit ({}) reached. Try increasing {}, {}, or both.", BuildBreakerPlugin.LOG_STAMP,
+				queryMaxAttempts, BuildBreakerPlugin.QUERY_MAX_ATTEMPTS_KEY, BuildBreakerPlugin.QUERY_INTERVAL_KEY);
 
-    ProjectStatus projectStatus = projectStatusResponse.getProjectStatus();
+		throw new IllegalStateException("Report processing is taking longer than the configured wait limit.");
+	}
 
-    Status status = projectStatus.getStatus();
-    LOGGER.info("Quality gate status: {}", status);
+	@VisibleForTesting
+	void checkQualityGate(WsClient wsClient, String analysisId) {
+		LOGGER.debug("Requesting quality gate status for analysisId {}", analysisId);
+		ProjectStatusResponse projectStatusResponse = wsClient.qualitygates()
+				.projectStatus(new ProjectStatusRequest().setAnalysisId(analysisId));
 
-    int errors = 0;
-    if (Status.ERROR.equals(status) || Status.WARN.equals(status)) {
-      errors = logConditions(projectStatus.getConditionsList());
-    }
+		ProjectStatus projectStatus = projectStatusResponse.getProjectStatus();
 
-    if (Status.ERROR.equals(status)) {
-      LOGGER.error("{} Project did not meet {} conditions", BuildBreakerPlugin.LOG_STAMP, errors);
-      throw new IllegalStateException("Project does not pass the quality gate.");
-    }
-  }
+		ProjectStatusResponse.Status status = projectStatus.getStatus();
+		LOGGER.info("Quality gate status: {}", status);
 
-  @VisibleForTesting
-  static int logConditions(List<Condition> conditionsList) {
-    int errors = 0;
+		int errors = 0;
+		if (ProjectStatusResponse.Status.ERROR.equals(status) || ProjectStatusResponse.Status.WARN.equals(status)) {
+			errors = logConditions(projectStatus.getConditionsList());
+		}
 
-    for (Condition condition : conditionsList) {
-      if (Status.WARN.equals(condition.getStatus())) {
-        LOGGER.warn(
-            "{}: {} {} {}",
-            getMetricName(condition.getMetricKey()),
-            condition.getActualValue(),
-            getComparatorSymbol(condition.getComparator()),
-            condition.getWarningThreshold());
-      } else if (Status.ERROR.equals(condition.getStatus())) {
-        errors++;
-        LOGGER.error(
-            "{}: {} {} {}",
-            getMetricName(condition.getMetricKey()),
-            condition.getActualValue(),
-            getComparatorSymbol(condition.getComparator()),
-            condition.getErrorThreshold());
-      }
-    }
+		if (ProjectStatusResponse.Status.ERROR.equals(status)) {
+			LOGGER.error("{} Project did not meet {} conditions", BuildBreakerPlugin.LOG_STAMP, errors);
+			throw new IllegalStateException("Project does not pass the quality gate.");
+		}
+	}
 
-    return errors;
-  }
+	@VisibleForTesting
+	static int logConditions(List<ProjectStatusResponse.Condition> conditionsList) {
+		int errors = 0;
 
-  private static String getMetricName(String metricKey) {
-    try {
-      Metric metric = CoreMetrics.getMetric(metricKey);
-      return metric.getName();
-    } catch (NoSuchElementException e) {
-      LOGGER.trace("Using key as name for custom metric '{}' due to '{}'", metricKey, e);
-    }
-    return metricKey;
-  }
+		for (ProjectStatusResponse.Condition condition : conditionsList) {
+			if (ProjectStatusResponse.Status.WARN.equals(condition.getStatus())) {
+				LOGGER.warn("{}: {} {} {}", getMetricName(condition.getMetricKey()), condition.getActualValue(),
+						getComparatorSymbol(condition.getComparator()), condition.getWarningThreshold());
+			} else if (ProjectStatusResponse.Status.ERROR.equals(condition.getStatus())) {
+				errors++;
+				LOGGER.error("{}: {} {} {}", getMetricName(condition.getMetricKey()), condition.getActualValue(),
+						getComparatorSymbol(condition.getComparator()), condition.getErrorThreshold());
+			}
+		}
 
-  private static String getComparatorSymbol(Comparator comparator) {
-    switch (comparator) {
-      case GT:
-        return ">";
-      case LT:
-        return "<";
-      case EQ:
-        return "=";
-      case NE:
-        return "!=";
-      default:
-        return comparator.toString();
-    }
-  }
+		return errors;
+	}
+
+	private static String getMetricName(String metricKey) {
+		try {
+			Metric metric = CoreMetrics.getMetric(metricKey);
+			return metric.getName();
+		} catch (NoSuchElementException e) {
+			LOGGER.trace("Using key as name for custom metric '{}' due to '{}'", metricKey, e);
+		}
+		return metricKey;
+	}
+
+	private static String getComparatorSymbol(ProjectStatusResponse.Comparator comparator) {
+		switch (comparator) {
+		case GT:
+			return ">";
+		case LT:
+			return "<";
+		case EQ:
+			return "=";
+		case NE:
+			return "!=";
+		default:
+			return comparator.toString();
+		}
+	}
 }

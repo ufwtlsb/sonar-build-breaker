@@ -43,19 +43,14 @@ public final class BuildBreakerPlugin extends SonarPlugin {
           "Total wait time is <code>%s * %s</code>.",
           BuildBreakerPlugin.QUERY_MAX_ATTEMPTS_KEY, BuildBreakerPlugin.QUERY_INTERVAL_KEY);
 
-  static final String FORBIDDEN_CONF_KEY = "sonar.buildbreaker.forbiddenConf";
-
   static final String ALTERNATIVE_SERVER_URL_KEY = "sonar.buildbreaker.alternativeServerUrl";
 
-  static final String ISSUES_SEVERITY_KEY = "sonar.buildbreaker.preview.issuesSeverity";
 
   static final String DISABLED = "Disabled";
 
   @Override
   public List getExtensions() {
     return Arrays.asList(
-        ForbiddenConfigurationBreaker.class,
-        IssuesSeverityBreaker.class,
         QualityGateBreaker.class,
         PropertyDefinition.builder(SKIP_KEY)
             .name("Skip quality gate check")
@@ -85,34 +80,13 @@ public final class BuildBreakerPlugin extends SonarPlugin {
             .type(PropertyType.INTEGER)
             .defaultValue("10000")
             .build(),
-        PropertyDefinition.builder(FORBIDDEN_CONF_KEY)
-            .name("Forbidden configuration parameters")
-            .description(
-                "Comma-separated list of <code>key=value</code> pairs that should break the build.")
-            .onQualifiers(Qualifiers.PROJECT)
-            .build(),
+
         PropertyDefinition.builder(ALTERNATIVE_SERVER_URL_KEY)
             .name("Alternative server URL")
             .description(
                 "URL to use for web service requests. If unset, uses the <code>serverUrl</code> "
                     + "property from <code>${sonar.working.directory}/report-task.txt</code>.")
             .onQualifiers(Qualifiers.PROJECT)
-            .build(),
-        PropertyDefinition.builder(ISSUES_SEVERITY_KEY)
-            .name("Issues severity failure level (preview analysis)")
-            .description(
-                "Fails the build in preview analysis mode if the severity of issues is equal to or "
-                    + "more severe than the selection.")
-            .onQualifiers(Qualifiers.PROJECT)
-            .type(PropertyType.SINGLE_SELECT_LIST)
-            .options(
-                DISABLED,
-                Severity.INFO,
-                Severity.MINOR,
-                Severity.MAJOR,
-                Severity.CRITICAL,
-                Severity.BLOCKER)
-            .defaultValue(DISABLED)
             .build());
   }
 }
